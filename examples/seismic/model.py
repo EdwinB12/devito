@@ -10,7 +10,7 @@ __all__ = ['SeismicModel', 'Model', 'ModelElastic',
            'ModelViscoelastic', 'ModelViscoacoustic']
 
 
-def initialize_damp(damp, nbl, spacing, abc_type="damp", fs=False):
+def initialize_damp(damp, padsizes, spacing, abc_type="damp", fs=False):
     """
     Initialize damping field with an absorbing boundary layer.
 
@@ -27,11 +27,11 @@ def initialize_damp(damp, nbl, spacing, abc_type="damp", fs=False):
         mask => 1 inside the domain and decreases in the layer
         not mask => 0 inside the domain and increase in the layer
     """
-    dampcoeff = 1.5 * np.log(1.0 / 0.001) / (nbl)
 
-    eqs = [Eq(damp, 1.0)] if abc_type == "mask" else []
-    for d in damp.dimensions:
+    eqs = [Eq(damp, 1.0 if abc_type == "mask" else 0.0)]
+    for (nbl, nbr), d in zip(padsizes, damp.dimensions):
         if not fs or d is not damp.dimensions[-1]:
+            dampcoeff = 1.5 * np.log(1.0 / 0.001) / (nbl)
             # left
             dim_l = SubDimension.left(name='abc_%s_l' % d.name, parent=d,
                                       thickness=nbl)
@@ -40,9 +40,10 @@ def initialize_damp(damp, nbl, spacing, abc_type="damp", fs=False):
             val = -val if abc_type == "mask" else val
             eqs += [Inc(damp.subs({d: dim_l}), val/d.spacing)]
         # right
+        dampcoeff = 1.5 * np.log(1.0 / 0.001) / (nbr)
         dim_r = SubDimension.right(name='abc_%s_r' % d.name, parent=d,
-                                   thickness=nbl)
-        pos = Abs((nbl - (d.symbolic_max - dim_r) + 1) / float(nbl))
+                                   thickness=nbr)
+        pos = Abs((nbr - (d.symbolic_max - dim_r) + 1) / float(nbr))
         val = dampcoeff * (pos - sin(2*np.pi*pos)/(2*np.pi))
         val = -val if abc_type == "mask" else val
         eqs += [Inc(damp.subs({d: dim_r}), val/d.spacing)]
@@ -124,11 +125,22 @@ class GenericModel(object):
             if callable(bcs):
                 bcs(self.damp, self.nbl)
             else:
-                initialize_damp(self.damp, self.nbl, self.spacing, abc_type=bcs, fs=fs)
+                initialize_damp(self.damp, self.padsizes, self.spacing,
+                                abc_type=bcs, fs=fs)
             self._physical_parameters = ['damp']
         else:
             self.damp = 1 if bcs == "mask" else 0
             self._physical_parameters = []
+
+    def check_damp(self, bcs="mask"):
+        if self.nbl != 0:
+            center = self.damp.data[tuple(s // 2 for s in self.damp.shape)]
+            re_init = (bcs == "mask" and center == 0) or (bcs == "damp" and center == 1)
+            if re_init:
+                initialize_damp(self.damp, self.padsizes, self.spacing,
+                                abc_type=bcs, fs=self.fs)
+        else:
+            self.damp = 1 if bcs == "mask" else 0
 
     @property
     def padsizes(self):
@@ -344,11 +356,11 @@ class SeismicModel(GenericModel):
         # The CFL condtion is then given by
         # dt <= coeff * h / (max(velocity))
         dt = self._cfl_coeff * np.min(self.spacing) / (self._thomsen_scale*self._max_vp)
-        dt = self.dt_scale * dt
+        dt = self.dtype("%.3e" % (self.dt_scale * dt))
         if self._dt:
-            assert self._dt < dt
+            assert self._dt <= dt
             return self._dt
-        return self.dtype("%.3e" % dt)
+        return dt
 
     def update(self, name, value):
         """
