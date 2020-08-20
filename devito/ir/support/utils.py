@@ -80,6 +80,7 @@ def build_iterators(mapper):
     for k, v in mapper.items():
         for d, offs in v.items():
             if d.is_Stepping:
+                offs = sorted(offs, key=lambda x: -float("inf") if x == 0 else x)
                 sub_iterators = iterators.setdefault(d.parent, set())
                 sub_iterators.update({ModuloDimension(d, i, k._time_size)
                                       for i in offs})
